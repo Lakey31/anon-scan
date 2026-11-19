@@ -1,7 +1,7 @@
 anon-scan
+*.txt
+!hosts.txt
 *.csv
 *.html
-results*.txt
-*_subdomains.txt
-.anon_scan_resume.log
-cidr_*.txt
+*.jsonl
+*.log

@@ -40,6 +40,9 @@ func main() {
 		case "diff":
 			handleDiff(os.Args[2:])
 			return
+		case "speed":
+			handleSpeed(os.Args[2:])
+			return
 		case "watch":
 			handleWatch(os.Args[2:])
 			return
@@ -174,6 +177,7 @@ func runBugScanXTUI() {
 			"CIDR IP Range Scanner",
 			"Reverse IP Lookup",
 			"ASN to CIDR Prefix Fetcher",
+			"Host Up/Down Speed Test (Download & Upload)",
 			"Continuous Host Watch Monitor",
 			"Scan History (Search Past Scans)",
 			"File Utilities (Dedup / Split / Diff)",
@@ -201,6 +205,30 @@ func runBugScanXTUI() {
 			px := tui.AskInput("Local Proxy (optional)", "")
 			out := tui.AskInput("Enter output filename", "asn_cidrs.txt")
 			handleASNCIDR(asn, out, px, false)
+			tui.Pause()
+		case strings.HasPrefix(action, "Host Up/Down Speed"):
+			tui.PrintHeader("ANON SCANNER")
+			st := tui.PickTxtFile("Select hosts .txt file (or enter domain)")
+			ss := tui.AskInput("Custom SNI (leave blank for each host)", "")
+			sp := tui.AskInput("Port (80 or 443)", "443")
+			px := tui.AskInput("Local Proxy (optional)", "")
+			out := tui.AskInput("Save results to file (optional)", "speed_results.txt")
+			sArgs := []string{"-p", sp}
+			if _, err := os.Stat(st); err == nil {
+				sArgs = append(sArgs, "-f", st)
+			} else {
+				sArgs = append(sArgs, "-t", st)
+			}
+			if ss != "" {
+				sArgs = append(sArgs, "-sni", ss)
+			}
+			if px != "" {
+				sArgs = append(sArgs, "-proxy", px)
+			}
+			if out != "" {
+				sArgs = append(sArgs, "-o", out)
+			}
+			handleSpeed(sArgs)
 			tui.Pause()
 		case strings.HasPrefix(action, "Continuous"):
 			tui.PrintHeader("ANON SCANNER")
@@ -1343,4 +1371,155 @@ func handleSelfUpdate() {
 	}
 	_ = os.Chmod(dest, 0755)
 	fmt.Printf("[✓] ANON SCANNER updated and installed to %s!\n", dest)
+}
+
+func handleSpeed(args []string) {
+	fs := flag.NewFlagSet("speed", flag.ExitOnError)
+	target := fs.String("t", "", "Single target domain or IP")
+	filePath := fs.String("f", "", "File containing hosts (.txt, one per line)")
+	sniFlag := fs.String("sni", "", "Custom SNI / Host header override")
+	port := fs.Int("p", 443, "Port to test (80 or 443)")
+	workers := fs.Int("w", 5, "Concurrent speed test workers")
+	downKB := fs.Int("down-kb", 512, "Max download test size in KB")
+	upKB := fs.Int("up-kb", 128, "Upload payload size in KB")
+	outFile := fs.String("o", "", "Optional output file to save sorted results")
+	proxyAddr := fs.String("proxy", "", "Optional local proxy (e.g. 127.0.0.1:10808)")
+	pkgMode := fs.Bool("pkg-mode", false, "Use Android ISP DNS")
+	_ = fs.Parse(args)
+
+	if *target == "" && *filePath == "" && fs.NArg() > 0 {
+		arg := fs.Arg(0)
+		if _, err := os.Stat(arg); err == nil {
+			*filePath = arg
+		} else {
+			*target = arg
+		}
+	}
+	if *target == "" && *filePath == "" {
+		fmt.Println("Usage:")
+		fmt.Println("  Single : anon-scan speed -t speed.cloudflare.com [-p 443]")
+		fmt.Println("  Bulk   : anon-scan speed -f hosts.txt [-w 5] [-o speed_results.txt]")
+		return
+	}
+
+	targets := collectTargets(*target, "", *filePath, false)
+	if len(targets) == 0 {
+		fmt.Fprintln(os.Stderr, "[!] No valid hosts found.")
+		return
+	}
+
+	dnsSrv := "1.1.1.1:53"
+	if *pkgMode {
+		dnsSrv = "system"
+	}
+	res := resolver.New(dnsSrv, 4*time.Second, *proxyAddr)
+
+	if len(targets) == 1 {
+		host := targets[0]
+		sni := emptyDefault(*sniFlag, host)
+		dnsInfo := res.Lookup(context.Background(), host, false)
+		ip := host
+		if len(dnsInfo.IPv4) > 0 {
+			ip = dnsInfo.IPv4[0]
+		}
+		fmt.Printf("\n[*] Running Up/Down Speed Test -> %s (%s:%d | SNI: %s)...\n", host, ip, *port, sni)
+		sr := scanner.RunUpDownSpeedTest(context.Background(), ip, *port, sni, sni, int64(*downKB)*1024, (*upKB)*1024, 15*time.Second, true, *proxyAddr)
+
+		fmt.Println("╔══════════════════════════════════════════════════════╗")
+		fmt.Println("║            ⚡ ANON SCANNER SPEED REPORT              ║")
+		fmt.Println("╠══════════════════════════════════════════════════════╣")
+		fmt.Printf("  Target / IP : %s (%s:%d)\n", sr.Target, sr.IP, sr.Port)
+		fmt.Printf("  TCP Latency : %d ms\n", sr.TCPMS)
+		if sr.DownError != "" {
+			fmt.Printf("  Download    : Error (%s)\n", sr.DownError)
+		} else {
+			fmt.Printf("  Download    : %.1f KB/s (%.2f Mbps) | %d KB | HTTP %d\n", sr.DownKBps, sr.DownMbps, sr.DownBytes/1024, sr.DownStatus)
+		}
+		if sr.UpError != "" {
+			fmt.Printf("  Upload      : Error (%s) | Sent %d KB\n", sr.UpError, sr.UpBytes/1024)
+		} else {
+			fmt.Printf("  Upload      : %.1f KB/s (%.2f Mbps) | %d KB | HTTP %d\n", sr.UpKBps, sr.UpMbps, sr.UpBytes/1024, sr.UpStatus)
+		}
+		fmt.Println("╚══════════════════════════════════════════════════════╝")
+		return
+	}
+
+	// Bulk .txt Speed Test
+	if *workers < 1 {
+		*workers = 1
+	}
+	if *workers > len(targets) {
+		*workers = len(targets)
+	}
+	fmt.Printf("\n[*] Bulk Speed Test: %d hosts | Workers: %d | Port: %d\n\n", len(targets), *workers, *port)
+	fmt.Printf("%-26s %-15s %-6s %-16s %-16s\n", "HOST", "IP", "TCP", "DOWNLOAD", "UPLOAD")
+	fmt.Printf("%-26s %-15s %-6s %-16s %-16s\n", "--------------------------", "---------------", "------", "----------------", "----------------")
+
+	jobs := make(chan string, *workers*2)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var results []scanner.SpeedResult
+
+	for i := 0; i < *workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for host := range jobs {
+				sni := emptyDefault(*sniFlag, host)
+				dnsInfo := res.Lookup(context.Background(), host, false)
+				ip := host
+				if len(dnsInfo.IPv4) > 0 {
+					ip = dnsInfo.IPv4[0]
+				}
+				sr := scanner.RunUpDownSpeedTest(context.Background(), ip, *port, sni, sni, int64(*downKB)*1024, (*upKB)*1024, 15*time.Second, true, *proxyAddr)
+				sr.Target = host
+
+				downStr := "ERR"
+				if sr.DownError == "" {
+					downStr = fmt.Sprintf("%.1f KB/s (%.1fM)", sr.DownKBps, sr.DownMbps)
+				}
+				upStr := "ERR"
+				if sr.UpError == "" {
+					upStr = fmt.Sprintf("%.1f KB/s (%.1fM)", sr.UpKBps, sr.UpMbps)
+				}
+
+				mu.Lock()
+				fmt.Printf("%-26s %-15s %4dms %-16s %-16s\n",
+					truncateStr(host, 26), truncateStr(ip, 15), sr.TCPMS, downStr, upStr)
+				results = append(results, sr)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	for _, t := range targets {
+		jobs <- t
+	}
+	close(jobs)
+	wg.Wait()
+
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].DownKBps > results[j].DownKBps
+	})
+
+	if *outFile != "" {
+		if f, err := os.Create(*outFile); err == nil {
+			for _, r := range results {
+				_, _ = fmt.Fprintf(f, "%s | IP:%s | TCP:%dms | Down:%.1fKB/s (%.2fMbps) | Up:%.1fKB/s (%.2fMbps)\n",
+					r.Target, r.IP, r.TCPMS, r.DownKBps, r.DownMbps, r.UpKBps, r.UpMbps)
+			}
+			_ = f.Close()
+			fmt.Printf("\n[✓] Saved sorted speed results to %s\n", *outFile)
+		}
+	}
+}
+
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-2] + ".."
 }
