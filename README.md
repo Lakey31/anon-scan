@@ -15,7 +15,7 @@ Termux (ARM64 / Android) සහ Linux සඳහා root අවශ්‍ය න�
 
 ```bash
 pkg update -y && pkg install -y golang clang termux-api
-git clone https://github.com/<your-username>/anon-scan.git
+git clone https://github.com/Lakey31/anon-scan.git
 cd anon-scan
 make install-termux
 ```
