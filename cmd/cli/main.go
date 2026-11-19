@@ -28,6 +28,11 @@ import (
 	"anon-scan/internal/tui"
 )
 
+// version can be overridden at build time:
+//
+//	go build -ldflags "-X main.version=v1.2.3" ./cmd/cli
+var version = "9.6"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -86,6 +91,7 @@ func main() {
 		checkIPv6   = flag.Bool("6", false, "Test IPv6 (AAAA) TCP latency alongside IPv4")
 		portsFlag   = flag.String("p", "80,443,8080,8443", "Comma-separated TCP ports to probe")
 		workers     = flag.Int("w", 25, "Number of concurrent workers (LMK-safe for Termux)")
+		versionFlag = flag.Bool("version", false, "Print version and exit")
 		rateFlag    = flag.Float64("rate", 0, "Max targets scanned per second across all workers (0 = unlimited)")
 		retriesFlag = flag.Int("retries", 0, "Retry transient HTTP probe errors N times with exponential backoff")
 		timeoutSec  = flag.Int("timeout", 4, "Timeout in seconds per network operation")
@@ -105,6 +111,11 @@ func main() {
 		scanRev     = flag.Bool("scan-rev", false, "Reverse IP lookup and scan all discovered domains")
 	)
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("anon-scan %s\n", version)
+		return
+	}
 
 	hasStdin := isStdinPiped() && !*interactive
 
