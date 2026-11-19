@@ -2,12 +2,18 @@ BINARY=anon-scan
 CLI_PKG=./cmd/cli
 LDFLAGS=-s -w
 
-.PHONY: all build install-termux build-linux clean
+.PHONY: all build test vet install-termux build-linux clean
 
 all: build
 
 build:
 	go build -ldflags="$(LDFLAGS)" -o $(BINARY) $(CLI_PKG)
+
+vet:
+	go vet ./...
+
+test: vet
+	go test -v ./...
 
 install-termux: build
 	pkill -9 $(BINARY) 2>/dev/null || true
