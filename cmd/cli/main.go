@@ -528,6 +528,18 @@ func executeScan(
 			if len(dnsInfo.IPv4) > 0 {
 				lookupIP = dnsInfo.IPv4[0]
 			}
+			// A VPN/proxy "fake-ip" DNS mode hands out 198.18.0.0/15 placeholders.
+			// DoH travels over HTTPS and is not hijacked, so retry with it to get the real IP.
+			if recon.IsFakeOrPrivateIP(lookupIP) {
+				fmt.Fprintf(os.Stderr, "[*] %s resolved to fake/private %s, retrying via DoH...\n", cleanTarget, lookupIP)
+				dohInfo := res.LookupDoH(context.Background(), cleanTarget, false)
+				for _, ip := range dohInfo.IPv4 {
+					if !recon.IsFakeOrPrivateIP(ip) {
+						lookupIP = ip
+						break
+					}
+				}
+			}
 		}
 		hosts, err := recon.ReverseIPLookup(context.Background(), lookupIP, 12*time.Second, opts.ProxyAddr)
 		if err != nil {

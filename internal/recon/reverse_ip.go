@@ -35,6 +35,13 @@ func isFakeOrPrivateIP(ip net.IP) bool {
 	return false
 }
 
+// IsFakeOrPrivateIP reports whether ipStr is a private, loopback, link-local or
+// VPN FakeDNS (198.18.0.0/15) address that public lookups cannot answer for.
+func IsFakeOrPrivateIP(ipStr string) bool {
+	ip := net.ParseIP(strings.TrimSpace(ipStr))
+	return ip != nil && isFakeOrPrivateIP(ip)
+}
+
 // ReverseIPLookup finds hostnames associated with a public IP using PTR, HackerTarget,
 // and AlienVault OTX Passive DNS fallback when HackerTarget quota is exceeded.
 func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, proxyAddr string) ([]string, error) {

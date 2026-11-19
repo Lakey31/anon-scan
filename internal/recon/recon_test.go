@@ -37,3 +37,21 @@ func TestCheckDanglingCNAME(t *testing.T) {
 		t.Fatalf("expected empty risk when IP resolves, got %q", safe)
 	}
 }
+
+func TestIsFakeOrPrivateIP(t *testing.T) {
+	cases := map[string]bool{
+		"198.19.208.60":  true,
+		"198.18.0.1":     true,
+		"10.0.0.5":       true,
+		"192.168.1.1":    true,
+		"127.0.0.1":      true,
+		"104.16.132.229": false,
+		"1.1.1.1":        false,
+		"not-an-ip":      false,
+	}
+	for ip, want := range cases {
+		if got := IsFakeOrPrivateIP(ip); got != want {
+			t.Errorf("IsFakeOrPrivateIP(%q) = %v, want %v", ip, got, want)
+		}
+	}
+}
