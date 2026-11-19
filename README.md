@@ -27,7 +27,9 @@ Go compile නොකර, checksum verify කළ prebuilt release binary එක i
     anon-scan -cidr 104.16.0.0/29 -sni m.facebook.com -pkg-mode -only-alive
     anon-scan -f hosts.txt -proxy 127.0.0.1:10808 -html report.html --copy --notify
     anon-scan -f hosts.txt -w 25 -rate 10 -retries 2 -only-alive
+    anon-scan -f hosts.txt -status 200,101,403
     anon-scan -version
+    anon-scan completion bash   # bash | zsh | fish (shell tab-completion script)
     anon-scan dedup -f hosts.txt -o clean.txt
     anon-scan split -f hosts.txt -n 500
     anon-scan diff old.jsonl new.jsonl

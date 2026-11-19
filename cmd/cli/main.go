@@ -92,6 +92,7 @@ func main() {
 		portsFlag   = flag.String("p", "80,443,8080,8443", "Comma-separated TCP ports to probe")
 		workers     = flag.Int("w", 25, "Number of concurrent workers (LMK-safe for Termux)")
 		versionFlag = flag.Bool("version", false, "Print version and exit")
+		statusFlag  = flag.String("status", "", "Only show/save hosts whose HTTP status is in this comma-separated list (e.g. 200,101,403)")
 		configFlag  = flag.String("config", "", "Config file with default options as 'key = value' lines (default ~/.anon-scan.conf or $ANON_SCAN_CONFIG)")
 		rateFlag    = flag.Float64("rate", 0, "Max targets scanned per second across all workers (0 = unlimited)")
 		retriesFlag = flag.Int("retries", 0, "Retry transient HTTP probe errors N times with exponential backoff")
@@ -115,6 +116,18 @@ func main() {
 
 	if *versionFlag {
 		fmt.Printf("anon-scan %s\n", version)
+		return
+	}
+
+	if flag.NArg() >= 1 && flag.Arg(0) == "completion" {
+		shell := ""
+		if flag.NArg() >= 2 {
+			shell = flag.Arg(1)
+		}
+		if err := writeCompletion(os.Stdout, shell, flag.CommandLine); err != nil {
+			fmt.Fprintf(os.Stderr, "[!] %v\nUsage: anon-scan completion bash|zsh|fish\n", err)
+			os.Exit(2)
+		}
 		return
 	}
 
@@ -189,6 +202,7 @@ func main() {
 		OnlyAlive:   *onlyAlive,
 		RatePerSec:  *rateFlag,
 		Retries:     *retriesFlag,
+		Statuses:    parseStatusList(*statusFlag),
 	}
 
 	executeScan(opts, *target, *cidrFlag, *filePath, *outFile, *csvFile, *htmlFile, *ckptFile, *workers, *jsonOut, *notifyFlag, *copyFlag, *resumeFlag, *fetchSubs, *scanSubs, *revIP, *scanRev, hasStdin)
@@ -646,6 +660,15 @@ func executeScan(
 		if opts.OnlyAlive {
 			reportData = aliveResults
 		}
+		if len(opts.Statuses) > 0 {
+			var kept []models.ScanResult
+			for _, r := range reportData {
+				if statusMatches(r, opts.Statuses) {
+					kept = append(kept, r)
+				}
+			}
+			reportData = kept
+		}
 		if err := storage.WriteHTMLReport(htmlFile, reportData); err == nil && !jsonOut {
 			fmt.Printf("\n[✓] Dark-mode HTML dashboard saved to: %s\n", htmlFile)
 		}
@@ -936,6 +959,8 @@ func runPool(ctx context.Context, targets []string, workers int, opts models.Sca
 				if opts.OnlyAlive && !result.Alive {
 					filtered = true
 				} else if opts.No302 && isRedirectResult(result) {
+					filtered = true
+				} else if !statusMatches(result, opts.Statuses) {
 					filtered = true
 				}
 
