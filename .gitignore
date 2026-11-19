@@ -1,0 +1,6 @@
+anon-scan
+*.csv
+*.html
+results*.txt
+*_subdomains.txt
+.anon_scan_resume.log
