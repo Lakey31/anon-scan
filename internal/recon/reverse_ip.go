@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -74,14 +75,19 @@ func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, p
 
 	// 2. HackerTarget Reverse IP API
 	htQuotaExceeded := false
+	answered := false // true once any API gave a definitive reply (even "0 records")
+	var lastErr error
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	endpoint := fmt.Sprintf("https://api.hackertarget.com/reverseiplookup/?q=%s", url.QueryEscape(ipStr))
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
 	if err == nil {
 		req.Header.Set("User-Agent", "anon-scan/9.6")
-		if resp, err := client.Do(req); err == nil {
+		if resp, err := client.Do(req); err != nil {
+			lastErr = fmt.Errorf("HackerTarget request failed: %w", err)
+		} else {
 			if resp.StatusCode == http.StatusOK {
-				sc := bufio.NewScanner(resp.Body)
+				answered = true
+				sc := bufio.NewScanner(io.LimitReader(resp.Body, 5<<20))
 				for sc.Scan() {
 					line := strings.TrimSpace(sc.Text())
 					if line == "" {
@@ -89,6 +95,7 @@ func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, p
 					}
 					if strings.Contains(line, "API count exceeded") {
 						htQuotaExceeded = true
+						answered = false
 						break
 					}
 					if strings.HasPrefix(line, "error") || strings.Contains(line, "No DNS A records") {
@@ -96,6 +103,8 @@ func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, p
 					}
 					addHost(line)
 				}
+			} else {
+				lastErr = fmt.Errorf("HackerTarget returned HTTP %d", resp.StatusCode)
 			}
 			_ = resp.Body.Close()
 		}
@@ -108,14 +117,22 @@ func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, p
 		otxURL := fmt.Sprintf("https://otx.alienvault.com/api/v1/indicators/IPv4/%s/passive_dns", url.PathEscape(ipStr))
 		if otxReq, err := http.NewRequestWithContext(otxCtx, http.MethodGet, otxURL, nil); err == nil {
 			otxReq.Header.Set("User-Agent", "anon-scan/9.6")
-			if otxResp, err := client.Do(otxReq); err == nil {
+			if otxResp, err := client.Do(otxReq); err != nil {
+				lastErr = fmt.Errorf("OTX request failed: %w", err)
+			} else {
 				if otxResp.StatusCode == http.StatusOK {
 					var data otxIPPassiveDNS
-					if json.NewDecoder(otxResp.Body).Decode(&data) == nil {
+					// Cap the body so an unexpectedly large reply can't exhaust memory.
+					if err := json.NewDecoder(io.LimitReader(otxResp.Body, 5<<20)).Decode(&data); err != nil {
+						lastErr = fmt.Errorf("OTX returned invalid JSON: %w", err)
+					} else {
+						answered = true
 						for _, rec := range data.PassiveDNS {
 							addHost(rec.Hostname)
 						}
 					}
+				} else {
+					lastErr = fmt.Errorf("OTX returned HTTP %d", otxResp.StatusCode)
 				}
 				_ = otxResp.Body.Close()
 			}
@@ -125,6 +142,12 @@ func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, p
 
 	if len(hosts) == 0 && htQuotaExceeded {
 		return nil, fmt.Errorf("HackerTarget daily quota exceeded and OTX returned 0 records for %s", ipStr)
+	}
+
+	// Nothing found and no API gave a definitive answer: report the failure
+	// instead of silently returning an empty list.
+	if len(hosts) == 0 && !answered && lastErr != nil {
+		return nil, fmt.Errorf("reverse IP lookup failed for %s: %w", ipStr, lastErr)
 	}
 
 	sort.Strings(hosts)
