@@ -3,6 +3,7 @@ package recon
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,9 +15,34 @@ import (
 	"anon-scan/internal/scanner"
 )
 
-func ReverseIPLookup(ctx context.Context, ip string, timeout time.Duration, proxyAddr string) ([]string, error) {
-	if net.ParseIP(ip) == nil {
-		return nil, fmt.Errorf("invalid IP address: %s", ip)
+type otxIPPassiveDNS struct {
+	PassiveDNS []struct {
+		Hostname string `json:"hostname"`
+	} `json:"passive_dns"`
+}
+
+func isFakeOrPrivateIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	// Check 198.18.0.0/15 (RFC 2544 / Clash & Sing-box FakeDNS TUN range)
+	if v4 := ip.To4(); v4 != nil {
+		if v4[0] == 198 && (v4[1] == 18 || v4[1] == 19) {
+			return true
+		}
+	}
+	return false
+}
+
+// ReverseIPLookup finds hostnames associated with a public IP using PTR, HackerTarget,
+// and AlienVault OTX Passive DNS fallback when HackerTarget quota is exceeded.
+func ReverseIPLookup(ctx context.Context, ipStr string, timeout time.Duration, proxyAddr string) ([]string, error) {
+	parsed := net.ParseIP(ipStr)
+	if parsed == nil {
+		return nil, fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+	if isFakeOrPrivateIP(parsed) {
+		return nil, fmt.Errorf("%s is a private/FakeDNS TUN IP (turn off VPN TUN mode or enter a public IP/domain)", ipStr)
 	}
 	if timeout < 8*time.Second {
 		timeout = 8 * time.Second
@@ -35,48 +61,70 @@ func ReverseIPLookup(ctx context.Context, ip string, timeout time.Duration, prox
 		}
 	}
 
+	// 1. Standard PTR lookup
 	ptrCtx, ptrCancel := context.WithTimeout(ctx, 3*time.Second)
-	if ptrs, err := net.DefaultResolver.LookupAddr(ptrCtx, ip); err == nil {
+	if ptrs, err := net.DefaultResolver.LookupAddr(ptrCtx, ipStr); err == nil {
 		for _, p := range ptrs {
 			addHost(p)
 		}
 	}
 	ptrCancel()
 
-	reqCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	endpoint := fmt.Sprintf("https://api.hackertarget.com/reverseiplookup/?q=%s", url.QueryEscape(ip))
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return hosts, err
-	}
-	req.Header.Set("User-Agent", "anon-scan/9.5")
-
 	client := scanner.NewHTTPClientWithProxy(timeout, proxyAddr)
-	resp, err := client.Do(req)
-	if err != nil {
-		return hosts, err
-	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return hosts, fmt.Errorf("HackerTarget HTTP %d", resp.StatusCode)
-	}
-
-	sc := bufio.NewScanner(resp.Body)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "error") || strings.Contains(line, "API count exceeded") || strings.Contains(line, "No DNS A records") {
-			if len(hosts) == 0 {
-				return nil, fmt.Errorf("%s", line)
+	// 2. HackerTarget Reverse IP API
+	htQuotaExceeded := false
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	endpoint := fmt.Sprintf("https://api.hackertarget.com/reverseiplookup/?q=%s", url.QueryEscape(ipStr))
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "anon-scan/9.6")
+		if resp, err := client.Do(req); err == nil {
+			if resp.StatusCode == http.StatusOK {
+				sc := bufio.NewScanner(resp.Body)
+				for sc.Scan() {
+					line := strings.TrimSpace(sc.Text())
+					if line == "" {
+						continue
+					}
+					if strings.Contains(line, "API count exceeded") {
+						htQuotaExceeded = true
+						break
+					}
+					if strings.HasPrefix(line, "error") || strings.Contains(line, "No DNS A records") {
+						break
+					}
+					addHost(line)
+				}
 			}
-			break
+			_ = resp.Body.Close()
 		}
-		addHost(line)
+	}
+	cancel()
+
+	// 3. Fallback to AlienVault OTX IPv4 Passive DNS if HackerTarget quota exceeded or returned nothing
+	if htQuotaExceeded || len(hosts) == 0 {
+		otxCtx, otxCancel := context.WithTimeout(ctx, timeout)
+		otxURL := fmt.Sprintf("https://otx.alienvault.com/api/v1/indicators/IPv4/%s/passive_dns", url.PathEscape(ipStr))
+		if otxReq, err := http.NewRequestWithContext(otxCtx, http.MethodGet, otxURL, nil); err == nil {
+			otxReq.Header.Set("User-Agent", "anon-scan/9.6")
+			if otxResp, err := client.Do(otxReq); err == nil {
+				if otxResp.StatusCode == http.StatusOK {
+					var data otxIPPassiveDNS
+					if json.NewDecoder(otxResp.Body).Decode(&data) == nil {
+						for _, rec := range data.PassiveDNS {
+							addHost(rec.Hostname)
+						}
+					}
+				}
+				_ = otxResp.Body.Close()
+			}
+		}
+		otxCancel()
+	}
+
+	if len(hosts) == 0 && htQuotaExceeded {
+		return nil, fmt.Errorf("HackerTarget daily quota exceeded and OTX returned 0 records for %s", ipStr)
 	}
 
 	sort.Strings(hosts)

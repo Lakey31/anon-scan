@@ -50,6 +50,9 @@ func main() {
 			}
 			storage.PrintHistory(q, 20)
 			return
+		case "update":
+			handleSelfUpdate()
+			return
 		case "menu":
 			runBugScanXTUI()
 			return
@@ -1298,4 +1301,46 @@ func printBanner() {
 	fmt.Println("║   🛰  ANON SCANNER CLI v9.5 (Complete Edition)       ║")
 	fmt.Println("║   Termux Ready • Speed • TLS Audit • Proxy • History ║")
 	fmt.Println("╚══════════════════════════════════════════════════════╝")
+}
+
+func handleSelfUpdate() {
+	repoDir := "."
+	if _, err := os.Stat("go.mod"); err != nil {
+		if home, hErr := os.UserHomeDir(); hErr == nil {
+			repoDir = home + "/anon-scan"
+		}
+	}
+	fmt.Printf("[*] Updating ANON SCANNER from GitHub in %s...\n", repoDir)
+
+	pullCmd := exec.Command("git", "-C", repoDir, "pull", "origin", "main")
+	pullCmd.Stdout = os.Stdout
+	pullCmd.Stderr = os.Stderr
+	if err := pullCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "[!] git pull failed: %v\n", err)
+		return
+	}
+
+	fmt.Println("[*] Rebuilding binary...")
+	buildCmd := exec.Command("go", "build", "-ldflags=-s -w", "-o", "anon-scan", "./cmd/cli")
+	buildCmd.Dir = repoDir
+	buildCmd.Stdout = os.Stdout
+	buildCmd.Stderr = os.Stderr
+	if err := buildCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "[!] go build failed: %v\n", err)
+		return
+	}
+
+	prefix := os.Getenv("PREFIX")
+	if prefix == "" {
+		prefix = "/usr/local"
+	}
+	dest := prefix + "/bin/anon-scan"
+	_ = os.Remove(dest)
+	cpCmd := exec.Command("cp", repoDir+"/anon-scan", dest)
+	if err := cpCmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "[!] Failed to install to %s: %v\n", dest, err)
+		return
+	}
+	_ = os.Chmod(dest, 0755)
+	fmt.Printf("[✓] ANON SCANNER updated and installed to %s!\n", dest)
 }
