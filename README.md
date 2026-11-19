@@ -35,6 +35,18 @@ Go compile නොකර, checksum verify කළ prebuilt release binary එක i
     anon-scan history cloudflare.com
     anon-scan update
 
+## ⚙️ Config File
+
+නිතර භාවිතා කරන options `~/.anon-scan.conf` (හෝ `$ANON_SCAN_CONFIG`, හෝ `-config path`) එකේ `key = value` ලෙස save කරන්න. Flag නම් dash නැතිව; `#` comments. Command line එකේ දෙන flags වලට සෑම විටම ප්‍රමුඛතාවය ඇත.
+
+    # ~/.anon-scan.conf
+    w = 25
+    rate = 10
+    retries = 2
+    timeout = 4
+    proxy = 127.0.0.1:10808
+    only-alive = true
+
 ## ⚠️ Responsible Use
 
 මෙය network diagnostics සහ recon tool එකකි. ඔබට අයිති හෝ පරීක්ෂා කිරීමට පැහැදිලි අවසර ඇති systems/hosts/ranges පමණක් scan කරන්න. විශාල scans වලදී `-rate` සහ `-w` අඩු කර, third-party APIs (crt.sh, HackerTarget, OTX, RIPEstat, RDAP) වල usage limits වලට ගරු කරන්න.

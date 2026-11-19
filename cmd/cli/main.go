@@ -92,6 +92,7 @@ func main() {
 		portsFlag   = flag.String("p", "80,443,8080,8443", "Comma-separated TCP ports to probe")
 		workers     = flag.Int("w", 25, "Number of concurrent workers (LMK-safe for Termux)")
 		versionFlag = flag.Bool("version", false, "Print version and exit")
+		configFlag  = flag.String("config", "", "Config file with default options as 'key = value' lines (default ~/.anon-scan.conf or $ANON_SCAN_CONFIG)")
 		rateFlag    = flag.Float64("rate", 0, "Max targets scanned per second across all workers (0 = unlimited)")
 		retriesFlag = flag.Int("retries", 0, "Retry transient HTTP probe errors N times with exponential backoff")
 		timeoutSec  = flag.Int("timeout", 4, "Timeout in seconds per network operation")
@@ -115,6 +116,20 @@ func main() {
 	if *versionFlag {
 		fmt.Printf("anon-scan %s\n", version)
 		return
+	}
+
+	// Defaults from the config file (~/.anon-scan.conf or $ANON_SCAN_CONFIG, or -config path);
+	// flags given on the command line always take priority.
+	cfgPath := strings.TrimSpace(*configFlag)
+	if cfgPath == "" {
+		cfgPath = defaultConfigPath()
+	}
+	if warns, err := applyConfigFile(flag.CommandLine, cfgPath); err != nil {
+		fmt.Fprintf(os.Stderr, "[!] Config file error: %v\n", err)
+	} else {
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "[!] Config: %s\n", w)
+		}
 	}
 
 	hasStdin := isStdinPiped() && !*interactive
