@@ -24,6 +24,8 @@ type ScanOptions struct {
 	BenchCount  int           `json:"bench_count"`
 	No302       bool          `json:"no_302"`
 	OnlyAlive   bool          `json:"only_alive"`
+	RatePerSec  float64       `json:"rate_per_sec,omitempty"`
+	Retries     int           `json:"retries,omitempty"`
 }
 
 type DNSInfo struct {

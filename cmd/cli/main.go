@@ -80,6 +80,8 @@ func main() {
 		checkIPv6   = flag.Bool("6", false, "Test IPv6 (AAAA) TCP latency alongside IPv4")
 		portsFlag   = flag.String("p", "80,443,8080,8443", "Comma-separated TCP ports to probe")
 		workers     = flag.Int("w", 25, "Number of concurrent workers (LMK-safe for Termux)")
+		rateFlag    = flag.Float64("rate", 0, "Max targets scanned per second across all workers (0 = unlimited)")
+		retriesFlag = flag.Int("retries", 0, "Retry transient HTTP probe errors N times with exponential backoff")
 		timeoutSec  = flag.Int("timeout", 4, "Timeout in seconds per network operation")
 		jsonOut     = flag.Bool("json", false, "Output results as JSONL (for Bot/script/diff integration)")
 		outFile     = flag.String("o", "", "Optional output file path to stream results")
@@ -153,6 +155,8 @@ func main() {
 		BenchCount:  *benchCount,
 		No302:       *no302,
 		OnlyAlive:   *onlyAlive,
+		RatePerSec:  *rateFlag,
+		Retries:     *retriesFlag,
 	}
 
 	executeScan(opts, *target, *cidrFlag, *filePath, *outFile, *csvFile, *htmlFile, *ckptFile, *workers, *jsonOut, *notifyFlag, *copyFlag, *resumeFlag, *fetchSubs, *scanSubs, *revIP, *scanRev, hasStdin)
@@ -828,6 +832,7 @@ func runPool(ctx context.Context, targets []string, workers int, opts models.Sca
 
 	res := resolver.New(opts.DNSServer, opts.Timeout, opts.ProxyAddr)
 	showProgress := !jsonMode && total > 1
+	limiter := scanner.NewLimiter(opts.RatePerSec)
 
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -835,6 +840,9 @@ func runPool(ctx context.Context, targets []string, workers int, opts models.Sca
 			defer wg.Done()
 			for host := range jobs {
 				if ctx.Err() != nil {
+					return
+				}
+				if err := limiter.Wait(ctx); err != nil {
 					return
 				}
 				result := scanSingleTarget(ctx, res, host, opts)
@@ -1092,7 +1100,7 @@ func scanSingleTarget(ctx context.Context, res *resolver.CustomResolver, rawTarg
 
 	if httpPort > 0 {
 		firstMethod := parseMethods(opts.HTTPMethod)[0]
-		httpInfo := scanner.ProbeHTTP(ctx, targetIP, httpPort, sniHost, sniHost, firstMethod, opts.SpeedTest, opts.Timeout, opts.SkipVerify, opts.ProxyAddr)
+		httpInfo := scanner.ProbeHTTPWithRetry(ctx, opts.Retries, targetIP, httpPort, sniHost, sniHost, firstMethod, opts.SpeedTest, opts.Timeout, opts.SkipVerify, opts.ProxyAddr)
 		if !opts.CompactMode {
 			wsOK, wsCode, wsErr := scanner.ProbeWebSocket(ctx, targetIP, httpPort, sniHost, sniHost, opts.WSPath, opts.Timeout, opts.SkipVerify, opts.ProxyAddr)
 			httpInfo.WebSocket101 = wsOK
